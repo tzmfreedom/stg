@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand"
 	"strconv"
+	"time"
 )
 
 var timer int
@@ -55,10 +56,18 @@ type Shot struct {
 	MoveCount int
 }
 
+type Block struct {
+	X float64
+	Y float64
+	SizeX float64
+	SizeY float64
+}
+
 var shotIndex = 1
 var enemies = []*Enemy{}
 var shots = []*Shot{}
 var enemyShots = []*Shot{}
+var blocks = []*Block{}
 
 func update(screen *ebiten.Image) error {
 	if phase != PHASE_GAMEOVER {
@@ -81,7 +90,7 @@ func update(screen *ebiten.Image) error {
 }
 
 func main() {
-	if err := ebiten.Run(update, screenWidth, screenHeight, 1, "Tetris!"); err != nil {
+	if err := ebiten.Run(update, screenWidth, screenHeight, 1, "STG"); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -92,13 +101,13 @@ func emenyAction() {
 		enemy.Y += enemy.Vy
 
 		if enemy.Type == 1 && timer % 60 == 0 {
-			v := math.Sqrt(math.Pow((x - enemy.X), 2) + math.Pow((y - enemy.Y), 2))
+			v := math.Sqrt(math.Pow(x - enemy.X, 2) + math.Pow(y - enemy.Y, 2))
 			enemyShots = append(enemyShots, &Shot{
 				Id: shotIndex,
 				X: enemy.X,
 				Y: enemy.Y,
-				Vx: (x - enemy.X)*3/v,
-				Vy: (y - enemy.Y)*3/v,
+				Vx: (x - enemy.X)*(1 + float64(rand.Intn(5)))/v,
+				Vy: (y - enemy.Y)*(1 + float64(rand.Intn(5)))/v,
 				SizeX: 2,
 				SizeY: 2,
 				MoveCount: 4,
@@ -118,6 +127,9 @@ func moveShot() {
 			phase = PHASE_GAMEOVER
 			return
 		}
+		if conflictBlock(shot.X, shot.Y, shot.SizeX, shot.SizeY) {
+			removeEnemyShot(shot)
+		}
 		if shot.X < 0 || shot.Y < 0 || shot.X > screenWidth || shot.Y > screenHeight {
 			removeEnemyShot(shot)
 		}
@@ -133,6 +145,9 @@ func moveShot() {
 				removeEnemy(enemy)
 				removeShot(shot)
 			}
+		}
+		if conflictBlock(shot.X, shot.Y, shot.SizeX, shot.SizeY) {
+			removeShot(shot)
 		}
 		if shot.X < 0 || shot.Y < 0 || shot.X > screenWidth || shot.Y > screenHeight {
 			removeShot(shot)
@@ -240,6 +255,14 @@ func draw(screen *ebiten.Image) {
 		options.GeoM.Translate(float64(enemy.X), float64(enemy.Y))
 		screen.DrawImage(img, options)
 	}
+
+	for _, block := range blocks {
+		img, _ := ebiten.NewImage(int(block.SizeX), int(block.SizeY), 0)
+		img.Fill(color.RGBA{0x00, 0xff, 0x00, 0xff})
+		options := &ebiten.DrawImageOptions{}
+		options.GeoM.Translate(float64(block.X), float64(block.Y))
+		screen.DrawImage(img, options)
+	}
 	// text.Draw(screen, string(score), scoreFont, scoreX, scoreY, color.White)
 }
 
@@ -250,6 +273,15 @@ func conflictEnemy(x, y, sizeX, sizeY float64) *Enemy {
 		}
 	}
 	return nil
+}
+
+func conflictBlock(x, y, sizeX, sizeY float64) bool {
+	for _, block := range blocks {
+		if block.Y < y + sizeY && block.Y + block.SizeY > y && block.X + block.SizeX > x && block.X < x + sizeX {
+			return true
+		}
+	}
+	return false
 }
 
 func conflictPlayer(shot *Shot) bool {
@@ -266,6 +298,7 @@ func init() {
 	y = initPlayerY
 	speed = 1
 	phase = PHASE_GAMESTART
+	rand.Seed(time.Now().UnixNano())
 	n := 30 + rand.Intn(5)
 	for i := 0; i < n; i++ {
 		enemy := &Enemy{
@@ -284,6 +317,12 @@ func init() {
 		}
 		enemies = append(enemies, enemy)
 	}
+	blocks = append(blocks, &Block{
+		X: 20 + float64(rand.Intn(300)),
+		Y: float64(rand.Intn(240)),
+		SizeX: 5,
+		SizeY: 50,
+	})
 }
 
 func debug(args ...interface{}) {
