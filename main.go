@@ -7,7 +7,6 @@ import (
 	"github.com/k0kubun/pp"
 	"image/color"
 	"log"
-	"math"
 	"math/rand"
 	"strconv"
 	"time"
@@ -19,11 +18,17 @@ var score int
 var phase int
 var initPlayerX, initPlayerY float64
 var speed float64
+var shotLevel = 1
+
+var currentStage []*EnemyPattern
+var currentEnemyPattern []*EnemyPattern
+var currentItemPatterns []*ItemPattern
 
 const (
-	screenWidth = 320
+	screenWidth  = 320
 	screenHeight = 240
-	playerSize = 5
+	playerSizeX  = 20
+	playerSizeY  = 5
 )
 
 const (
@@ -31,54 +36,99 @@ const (
 	PHASE_GAMEOVER
 )
 
+const (
+	STATE_HIDDEN = iota
+	STATE_DISPLAY_IN
+	STATE_DEAD
+	STATE_DISPLAY_OUT
+)
+
+const (
+	ITEM_POWERUP = iota
+)
+
 type Enemy struct {
-	Type int
-	Id int
-	X float64
-	Y float64
-	Vx float64
-	Vy float64
+	Id    int
+	X     float64
+	Y     float64
 	SizeX float64
 	SizeY float64
 	Score int
-	HP int
+	HP    int
 }
 
 type Shot struct {
-	Id int
-	X float64
-	Y float64
-	Vx float64
-	Vy float64
-	SizeX float64
-	SizeY float64
-	Power int
+	Id        int
+	X         float64
+	Y         float64
+	Vx        float64
+	Vy        float64
+	SizeX     float64
+	SizeY     float64
+	Power     int
 	MoveCount int
 }
 
 type Block struct {
-	X float64
-	Y float64
+	X     float64
+	Y     float64
 	SizeX float64
 	SizeY float64
 }
 
+type EnemyPattern struct {
+	Id            int
+	displayIn     int
+	displayPeriod int
+	displayTime   int
+	State         int
+	Enemy         Enemy
+	X             float64
+	Y             float64
+	movePattern   func(p *EnemyPattern)
+	shotPattern   func(p *EnemyPattern) *Shot
+}
+
+type Item struct {
+	SizeX float64
+	SizeY float64
+}
+
+type ItemPattern struct {
+	Id   int
+	X    float64
+	Y    float64
+	Item *Item
+}
+
+const FRAME_1SEC = 60
+
 var shotIndex = 1
-var enemies = []*Enemy{}
+var itemIndex = 1
 var shots = []*Shot{}
 var enemyShots = []*Shot{}
 var blocks = []*Block{}
+var currentItemId = 0
+
+var powerUpItem = &Item{
+	SizeX: 20,
+	SizeY: 20,
+}
 
 func update(screen *ebiten.Image) error {
 	if phase != PHASE_GAMEOVER {
 		timer++
+		for _, pattern := range currentEnemyPattern {
+			pattern.displayTime++
+		}
 		handleInput()
 	}
 	if phase == PHASE_GAMEOVER {
-		ebitenutil.DebugPrint(screen, "GAME OVER!: " + strconv.Itoa(score))
+		ebitenutil.DebugPrint(screen, "GAME OVER!: "+strconv.Itoa(score))
 	} else {
 		ebitenutil.DebugPrint(screen, strconv.Itoa(score))
 
+		itemGet()
 		emenyAction()
 		moveShot()
 	}
@@ -95,31 +145,47 @@ func main() {
 	}
 }
 
-func emenyAction() {
-	for _, enemy := range enemies {
-		enemy.X += enemy.Vx
-		enemy.Y += enemy.Vy
+func itemGet() {
+	pattern := conflictItem()
+	if pattern != nil {
+		shotLevel++
+		newItemPatterns := []*ItemPattern{}
+		for _, p := range currentItemPatterns {
+			if p.Id != pattern.Id {
+				newItemPatterns = append(newItemPatterns, pattern)
+			}
+		}
+		currentItemPatterns = newItemPatterns
+	}
+}
 
-		if enemy.Type == 1 && timer % 60 == 0 {
-			v := math.Sqrt(math.Pow(x - enemy.X, 2) + math.Pow(y - enemy.Y, 2))
-			enemyShots = append(enemyShots, &Shot{
-				Id: shotIndex,
-				X: enemy.X,
-				Y: enemy.Y,
-				Vx: (x - enemy.X)*(1 + float64(rand.Intn(5)))/v,
-				Vy: (y - enemy.Y)*(1 + float64(rand.Intn(5)))/v,
-				SizeX: 2,
-				SizeY: 2,
-				MoveCount: 4,
-			})
-			shotIndex++
+func emenyAction() {
+	for _, pattern := range stage1 {
+		if timer == pattern.displayIn {
+			pattern.State = STATE_DISPLAY_IN
+			currentEnemyPattern = append(currentEnemyPattern, pattern)
 		}
 	}
+	newPattern := []*EnemyPattern{}
+	for _, pattern := range currentEnemyPattern {
+		if timer > pattern.displayIn+pattern.displayPeriod {
+			pattern.State = STATE_DISPLAY_OUT
+			continue
+		}
+		pattern.movePattern(pattern)
+		shot := pattern.shotPattern(pattern)
+		if shot != nil {
+			enemyShots = append(enemyShots, shot)
+		}
+		newPattern = append(newPattern, pattern)
+	}
+
+	currentEnemyPattern = newPattern
 }
 
 func moveShot() {
 	for _, shot := range enemyShots {
-		if timer % shot.MoveCount == 0 {
+		if timer%shot.MoveCount == 0 {
 			shot.X += shot.Vx
 			shot.Y += shot.Vy
 		}
@@ -137,12 +203,12 @@ func moveShot() {
 	for _, shot := range shots {
 		shot.X += shot.Vx
 		shot.Y += shot.Vy
-		enemy := conflictEnemy(shot.X, shot.Y, shot.SizeX, shot.SizeY)
-		if enemy != nil {
-			enemy.HP -= shot.Power
-			if enemy.HP <= 0 {
-				score += enemy.Score
-				removeEnemy(enemy)
+		pattern := conflictEnemy(shot.X, shot.Y, shot.SizeX, shot.SizeY)
+		if pattern != nil {
+			pattern.Enemy.HP -= shot.Power
+			if pattern.Enemy.HP <= 0 {
+				score += pattern.Enemy.Score
+				removeEnemy(pattern)
 				removeShot(shot)
 			}
 		}
@@ -155,14 +221,14 @@ func moveShot() {
 	}
 }
 
-func removeEnemy(search *Enemy) {
-	newEnemies := []*Enemy{}
-	for _, e := range enemies {
+func removeEnemy(search *EnemyPattern) {
+	newEnemyPattern := []*EnemyPattern{}
+	for _, e := range currentEnemyPattern {
 		if e.Id != search.Id {
-			newEnemies = append(newEnemies, e)
+			newEnemyPattern = append(newEnemyPattern, e)
 		}
 	}
-	enemies = newEnemies
+	currentEnemyPattern = newEnemyPattern
 }
 
 func removeShot(search *Shot) {
@@ -185,11 +251,10 @@ func removeEnemyShot(search *Shot) {
 	enemyShots = newShots
 }
 
-
 func handleInput() {
 	if v := inpututil.KeyPressDuration(ebiten.KeyLeft); v > 0 {
 		if x > 0 {
-			x-=speed
+			x -= speed
 		}
 	}
 	if v := inpututil.KeyPressDuration(ebiten.KeyRight); v > 0 {
@@ -209,24 +274,51 @@ func handleInput() {
 	}
 	if v := inpututil.KeyPressDuration(ebiten.KeyS); v == 1 || (v > 0 && v%10 == 0) {
 		shots = append(shots, &Shot{
-			Id: shotIndex,
-			X: x+5,
-			Y: y+5,
+			Id:    shotIndex,
+			X:     x,
+			Y:     y,
 			SizeX: 5,
 			SizeY: 5,
-			Vx: 1,
-			Vy: 0,
+			Vx:    5,
+			Vy:    0,
 			Power: 10,
 		})
 		shotIndex++
+
+		if shotLevel > 1 && (v == 1 || v%30 == 0) {
+			shots = append(shots, &Shot{
+				Id:    shotIndex,
+				X:     x,
+				Y:     y,
+				SizeX: 5,
+				SizeY: 5,
+				Vx:    3,
+				Vy:    4,
+				Power: 5,
+			})
+			shotIndex++
+		}
+		if shotLevel > 2 && (v == 1 || v%30 == 0) {
+			shots = append(shots, &Shot{
+				Id:    shotIndex,
+				X:     x,
+				Y:     y,
+				SizeX: 5,
+				SizeY: 5,
+				Vx:    3,
+				Vy:    -4,
+				Power: 5,
+			})
+			shotIndex++
+		}
 	}
-	if conflictEnemy(x, y, playerSize, playerSize) != nil {
+	if conflictEnemy(x, y, playerSizeX, playerSizeY) != nil {
 		phase = PHASE_GAMEOVER
 	}
 }
 
 func draw(screen *ebiten.Image) {
-	img, _ := ebiten.NewImage(playerSize, playerSize, 0)
+	img, _ := ebiten.NewImage(playerSizeX, playerSizeY, 0)
 	img.Fill(color.RGBA{0x00, 0xff, 0x00, 0xff})
 	options := &ebiten.DrawImageOptions{}
 	options.GeoM.Translate(float64(x), float64(y))
@@ -248,8 +340,8 @@ func draw(screen *ebiten.Image) {
 		screen.DrawImage(img, options)
 	}
 
-	for _, enemy := range enemies {
-		img, _ := ebiten.NewImage(int(enemy.SizeX), int(enemy.SizeY), 0)
+	for _, enemy := range currentEnemyPattern {
+		img, _ := ebiten.NewImage(int(enemy.Enemy.SizeX), int(enemy.Enemy.SizeY), 0)
 		img.Fill(color.RGBA{0xff, 0x00, 0x00, 0xff})
 		options := &ebiten.DrawImageOptions{}
 		options.GeoM.Translate(float64(enemy.X), float64(enemy.Y))
@@ -263,13 +355,30 @@ func draw(screen *ebiten.Image) {
 		options.GeoM.Translate(float64(block.X), float64(block.Y))
 		screen.DrawImage(img, options)
 	}
+
+	for _, pattern := range currentItemPatterns {
+		img, _ := ebiten.NewImage(int(pattern.Item.SizeX), int(pattern.Item.SizeY), 0)
+		img.Fill(color.RGBA{0x00, 0x00, 0xff, 0xff})
+		options := &ebiten.DrawImageOptions{}
+		options.GeoM.Translate(float64(pattern.X), float64(pattern.Y))
+		screen.DrawImage(img, options)
+	}
 	// text.Draw(screen, string(score), scoreFont, scoreX, scoreY, color.White)
 }
 
-func conflictEnemy(x, y, sizeX, sizeY float64) *Enemy {
-	for _, enemy := range enemies {
-		if enemy.Y < y + sizeY && enemy.Y + enemy.SizeY > y && enemy.X + enemy.SizeX > x && enemy.X < x + sizeX {
-			return enemy
+func conflictItem() *ItemPattern {
+	for _, pattern := range currentItemPatterns {
+		if pattern.Y < y+playerSizeY && pattern.Y+pattern.Item.SizeY > y && pattern.X+pattern.Item.SizeX > x && pattern.X < x+playerSizeX {
+			return pattern
+		}
+	}
+	return nil
+}
+
+func conflictEnemy(x, y, sizeX, sizeY float64) *EnemyPattern {
+	for _, pattern := range currentEnemyPattern {
+		if pattern.Y < y+sizeY && pattern.Y+pattern.Enemy.SizeY > y && pattern.X+pattern.Enemy.SizeX > x && pattern.X < x+sizeX {
+			return pattern
 		}
 	}
 	return nil
@@ -277,7 +386,7 @@ func conflictEnemy(x, y, sizeX, sizeY float64) *Enemy {
 
 func conflictBlock(x, y, sizeX, sizeY float64) bool {
 	for _, block := range blocks {
-		if block.Y < y + sizeY && block.Y + block.SizeY > y && block.X + block.SizeX > x && block.X < x + sizeX {
+		if block.Y < y+sizeY && block.Y+block.SizeY > y && block.X+block.SizeX > x && block.X < x+sizeX {
 			return true
 		}
 	}
@@ -285,7 +394,7 @@ func conflictBlock(x, y, sizeX, sizeY float64) bool {
 }
 
 func conflictPlayer(shot *Shot) bool {
-	if shot.Y < y + playerSize && shot.Y + shot.SizeY > y && shot.X + shot.SizeX > x && shot.X < x + playerSize {
+	if shot.Y < y+playerSizeY && shot.Y+shot.SizeY > y && shot.X+shot.SizeX > x && shot.X < x+playerSizeX {
 		return true
 	}
 	return false
@@ -298,35 +407,29 @@ func init() {
 	y = initPlayerY
 	speed = 1
 	phase = PHASE_GAMESTART
-	rand.Seed(time.Now().UnixNano())
-	n := 30 + rand.Intn(5)
-	for i := 0; i < n; i++ {
-		enemy := &Enemy{
-			Id: i,
-			X: 20 + float64(rand.Intn(300)),
-			Y: float64(rand.Intn(240)),
-			Vx: 0,
-			Vy: 0,
-			//Vx: -5 + rand.Intn(10),
-			//Vy: -5 + rand.Intn(10),
-			SizeX: 5 + float64(rand.Intn(5)),
-			SizeY: 5 + float64(rand.Intn(5)),
-			Score: 100 + rand.Intn(50),
-			Type: rand.Intn(2),
-			HP: 10 + rand.Intn(100),
-		}
-		enemies = append(enemies, enemy)
+	currentStage = stage1
+	currentItemPatterns = []*ItemPattern{
+		{
+			Id:   newItemId(),
+			X:    100,
+			Y:    100,
+			Item: powerUpItem,
+		},
 	}
+	rand.Seed(time.Now().UnixNano())
 	blocks = append(blocks, &Block{
-		X: 20 + float64(rand.Intn(300)),
-		Y: float64(rand.Intn(240)),
+		X:     20 + float64(rand.Intn(300)),
+		Y:     float64(rand.Intn(240)),
 		SizeX: 5,
 		SizeY: 50,
 	})
 }
 
+func newItemId() int {
+	currentItemId++
+	return currentItemId
+}
+
 func debug(args ...interface{}) {
 	pp.Println(args...)
 }
-
-
